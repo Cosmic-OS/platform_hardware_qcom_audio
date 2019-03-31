@@ -38,7 +38,7 @@
  * This is the sysfs path for the HDMI audio data block
  */
 #define AUDIO_DATA_BLOCK_PATH "/sys/class/graphics/fb1/audio_data_block"
-#define MIXER_XML_PATH "/system/etc/mixer_paths.xml"
+#define MIXER_XML_PATH "mixer_paths.xml"
 
 /*
  * This file will have a maximum of 38 bytes:
@@ -123,6 +123,7 @@ static const char * const device_table[SND_DEVICE_MAX] = {
     [SND_DEVICE_OUT_SPEAKER_AND_HEADPHONES] = "speaker-and-headphones",
     [SND_DEVICE_OUT_VOICE_SPEAKER] = "voice-speaker",
     [SND_DEVICE_OUT_VOICE_HEADPHONES] = "voice-headphones",
+    [SND_DEVICE_OUT_VOICE_HEADSET] = "voice-headphones",
     [SND_DEVICE_OUT_HDMI] = "hdmi",
     [SND_DEVICE_OUT_SPEAKER_AND_HDMI] = "speaker-and-hdmi",
     [SND_DEVICE_OUT_BT_SCO] = "bt-sco-headset",
@@ -133,6 +134,7 @@ static const char * const device_table[SND_DEVICE_MAX] = {
     [SND_DEVICE_OUT_VOICE_TTY_FULL_HEADPHONES] = "voice-tty-full-headphones",
     [SND_DEVICE_OUT_VOICE_TTY_VCO_HEADPHONES] = "voice-tty-vco-headphones",
     [SND_DEVICE_OUT_VOICE_TTY_HCO_HANDSET] = "voice-tty-hco-handset",
+    [SND_DEVICE_OUT_VOICE_MUSIC_TX] = "voice-music-tx",
     [SND_DEVICE_OUT_USB_HEADSET] = "usb-headset",
     [SND_DEVICE_OUT_USB_HEADPHONES] = "usb-headphones",
     [SND_DEVICE_OUT_VOICE_USB_HEADSET] = "usb-headset",
@@ -178,6 +180,7 @@ static const int acdb_device_table[SND_DEVICE_MAX] = {
     [SND_DEVICE_OUT_SPEAKER_AND_HEADPHONES] = 10,
     [SND_DEVICE_OUT_VOICE_SPEAKER] = 14,
     [SND_DEVICE_OUT_VOICE_HEADPHONES] = 10,
+    [SND_DEVICE_OUT_VOICE_HEADSET] = 10,
     [SND_DEVICE_OUT_HDMI] = 18,
     [SND_DEVICE_OUT_SPEAKER_AND_HDMI] = 14,
     [SND_DEVICE_OUT_BT_SCO] = 22,
@@ -188,6 +191,7 @@ static const int acdb_device_table[SND_DEVICE_MAX] = {
     [SND_DEVICE_OUT_VOICE_TTY_FULL_HEADPHONES] = 17,
     [SND_DEVICE_OUT_VOICE_TTY_VCO_HEADPHONES] = 17,
     [SND_DEVICE_OUT_VOICE_TTY_HCO_HANDSET] = 37,
+    [SND_DEVICE_OUT_VOICE_MUSIC_TX] = 3,
     [SND_DEVICE_OUT_USB_HEADSET] = 45,
     [SND_DEVICE_OUT_USB_HEADPHONES] = 45,
     [SND_DEVICE_OUT_VOICE_USB_HEADSET] = 45,
@@ -266,12 +270,35 @@ static int set_echo_reference(struct mixer *mixer, const char* ec_ref)
     return 0;
 }
 
+// Treblized config files will be located in /odm/etc or /vendor/etc.
+static const char *kConfigLocationList[] =
+        {"/odm/etc", "/vendor/etc", "/system/etc"};
+static const int kConfigLocationListSize =
+        (sizeof(kConfigLocationList) / sizeof(kConfigLocationList[0]));
+
+bool resolveConfigFile(char file_name[MIXER_PATH_MAX_LENGTH]) {
+    char full_config_path[MIXER_PATH_MAX_LENGTH];
+    for (int i = 0; i < kConfigLocationListSize; i++) {
+        snprintf(full_config_path,
+                 MIXER_PATH_MAX_LENGTH,
+                 "%s/%s",
+                 kConfigLocationList[i],
+                 file_name);
+        if (F_OK == access(full_config_path, 0)) {
+            strcpy(file_name, full_config_path);
+            return true;
+        }
+    }
+    return false;
+}
+
 void *platform_init(struct audio_device *adev)
 {
     char platform[PROPERTY_VALUE_MAX];
     char baseband[PROPERTY_VALUE_MAX];
     char value[PROPERTY_VALUE_MAX];
     struct platform_data *my_data;
+    char mixer_xml_file[MIXER_PATH_MAX_LENGTH] = MIXER_XML_PATH;
 
     adev->mixer = mixer_open(MIXER_CARD);
 
@@ -280,7 +307,8 @@ void *platform_init(struct audio_device *adev)
         return NULL;
     }
 
-    adev->audio_route = audio_route_init(MIXER_CARD, MIXER_XML_PATH);
+    resolveConfigFile(mixer_xml_file);
+    adev->audio_route = audio_route_init(MIXER_CARD, mixer_xml_file);
     if (!adev->audio_route) {
         ALOGE("%s: Failed to init audio route controls, aborting.", __func__);
         return NULL;
@@ -570,6 +598,11 @@ int platform_stop_voice_call(void *platform, uint32_t vsid __unused)
     return ret;
 }
 
+int platform_set_mic_break_det(void *platform __unused, bool enable __unused)
+{
+    return 0;
+}
+
 void platform_set_speaker_gain_in_combo(struct audio_device *adev __unused,
                                         snd_device_t snd_device  __unused,
                                         bool enable __unused) {
@@ -648,6 +681,8 @@ snd_device_t platform_get_output_snd_device(void *platform, audio_devices_t devi
                 snd_device = SND_DEVICE_OUT_VOICE_TTY_VCO_HEADPHONES;
             else if (adev->voice.tty_mode == TTY_MODE_HCO)
                 snd_device = SND_DEVICE_OUT_VOICE_TTY_HCO_HANDSET;
+            else if (devices & AUDIO_DEVICE_OUT_WIRED_HEADSET)
+                snd_device = SND_DEVICE_OUT_VOICE_HEADSET;
             else
                 snd_device = SND_DEVICE_OUT_VOICE_HEADPHONES;
         } else if (devices & AUDIO_DEVICE_OUT_ALL_SCO) {
@@ -1351,6 +1386,11 @@ int platform_get_microphones(void *platform __unused,
                              struct audio_microphone_characteristic_t *mic_array __unused,
                              size_t *mic_count __unused) {
     return -ENOSYS;
+}
+
+bool platform_set_microphone_map(void *platform __unused, snd_device_t in_snd_device __unused,
+                                 const struct mic_info *info __unused) {
+    return false;
 }
 
 int platform_get_active_microphones(void *platform __unused, unsigned int channels __unused,
